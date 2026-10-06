@@ -1,0 +1,2 @@
+# Hybrid-Soil-Analysis-Fertility-Crop-Recommendation-System
+A hybrid machine learning and Generative AI-based system for soil fertility analysis and crop recommendation. It uses Random Forest models to analyze soil and environmental parameters, recommends the top 3 suitable crops with suitability percentages, and generates AI-powered agricultural advisory reports through a Streamlit web application.
