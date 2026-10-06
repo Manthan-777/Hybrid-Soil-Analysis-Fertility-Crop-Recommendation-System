@@ -1,11 +1,38 @@
 import streamlit as st
 import pandas as pd
 import joblib
+import time
 from google import genai
 import os
 
-API_KEY = st.secrets["GEMINI_API_KEY"]
+# Initialize Gemini Client safely
+API_KEY = os.getenv("GEMINI_API_KEY", "Key")
 client = genai.Client(api_key=API_KEY)
+
+MODELS_TO_TRY = ("gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest")
+TRANSIENT_MARKERS = ("503", "UNAVAILABLE", "overloaded", "429", "RESOURCE_EXHAUSTED", "500", "INTERNAL")
+
+
+def generate_with_retry_and_fallback(prompt, max_attempts=3):
+    """Retry transient errors with backoff; move to the next model on repeated failure."""
+    last_error = None
+    for model_name in MODELS_TO_TRY:
+        for attempt in range(max_attempts):
+            try:
+                response = client.models.generate_content(model=model_name, contents=prompt)
+                text = (response.text or "").strip()
+                if text:
+                    return text, model_name
+                last_error = RuntimeError(f"{model_name} returned an empty response.")
+                break
+            except Exception as exc:
+                last_error = exc
+                if any(marker in str(exc) for marker in TRANSIENT_MARKERS):
+                    time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                    continue
+                break  # permanent error for this model -> try the next one
+    raise RuntimeError(f"All Gemini models failed. Last error: {last_error}")
+
 
 st.set_page_config(page_title="Agri-Advisor AI", page_icon="🌱", layout="wide")
 st.title("🌱 Agricultural Advisor + Gemini AI Agent")
@@ -118,17 +145,6 @@ if st.button("🚀 Analyze & Generate AI Plan", use_container_width=True):
         # Handle numeric vs string output mapping safely
         pred_micro = FERTILITY_LABELS.get(pred_micro_raw, str(pred_micro_raw))
 
-        st.markdown("---")
-        st.subheader("🌾 Top 3 Recommended Crops")
-        crop_cols = st.columns(len(top_crops))
-        for col, (crop_name, conf) in zip(crop_cols, top_crops):
-            col.metric(crop_name, f"{conf}% suitable" if conf is not None else "—")
-
-        st.markdown("---")
-        c1, c2 = st.columns(2)
-        c1.metric("Macro Fertility", pred_macro)
-        c2.metric("Micro Fertility", pred_micro)
-
         # Gemini Agent Integration
         top_crops_str = ", ".join(
             f"{crop} ({conf}% suitability)" if conf is not None else crop
@@ -158,12 +174,181 @@ if st.button("🚀 Analyze & Generate AI Plan", use_container_width=True):
         """
 
         with st.spinner("Generating Agronomist Action Plan via Gemini AI..."):
-            response = client.models.generate_content(
-                model='gemini-3.6-flash',
-                contents=prompt
-            )
-            st.markdown("### 📋 AI Agronomist Action Plan")
-            st.markdown(response.text)
+            try:
+                plan_text, used_model = generate_with_retry_and_fallback(prompt)
+            except Exception as e:
+                plan_text = None
+                st.error(
+                    f"The AI plan couldn't be generated right now (Gemini is likely overloaded): {e}\n\n"
+                    "Your crop and fertility predictions above are still valid — you can retry by clicking "
+                    "Analyze again, or check https://status.cloud.google.com/ for Gemini API status."
+                )
+
+        # Persist everything: Streamlit reruns the whole script on every widget
+        # event (including a chat message), so results kept only in local
+        # variables disappear the moment the chatbox below is used.
+        st.session_state["analysis"] = {
+            "top_crops": top_crops,
+            "pred_macro": pred_macro,
+            "pred_micro": pred_micro,
+            "plan_text": plan_text,
+            "soil_context": (
+                f"Top 3 Recommended Crops (by suitability): {top_crops_str}\n"
+                f"Macro Fertility Status: {pred_macro}\n"
+                f"Micro Fertility Status: {pred_micro}\n"
+                f"N-P-K: {n}-{p}-{k} | pH: {ph} | Organic Carbon: {oc}%\n"
+                f"Micronutrients: Zn={zn} ppm, Fe={fe} ppm, Cu={cu} ppm, Mn={mn} ppm, B={b} ppm, S={s} ppm, EC={ec} dS/m\n"
+                f"Environment: Temp={temp}°C, Humidity={humidity}%, Rainfall={rainfall}mm, "
+                f"Soil Type={soil_type}, Photoperiod={photoperiod}, Light Hours={light_hours}, "
+                f"Light Intensity={light_intensity}, Relative Humidity={rh}%"
+            ),
+        }
 
     except Exception as e:
         st.error(f"Inference Error: {str(e)}")
+
+# --- Render results on every rerun, not just the click that produced them ---
+analysis = st.session_state.get("analysis")
+if analysis:
+    st.markdown("---")
+    st.subheader("🌾 Top 3 Recommended Crops")
+    crop_cols = st.columns(len(analysis["top_crops"]))
+    for col, (crop_name, conf) in zip(crop_cols, analysis["top_crops"]):
+        col.metric(crop_name, f"{conf}% suitable" if conf is not None else "—")
+
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    c1.metric("Macro Fertility", analysis["pred_macro"])
+    c2.metric("Micro Fertility", analysis["pred_micro"])
+
+    if analysis["plan_text"]:
+        st.markdown("### 📋 AI Agronomist Action Plan")
+        st.markdown(analysis["plan_text"])
+
+# ---------------------------------------------------------
+# Floating Chat Widget ("Ask me about your soil")
+# Requires: pip install streamlit-float
+# ---------------------------------------------------------
+from streamlit_float import float_init
+
+float_init()
+
+if "chat_open" not in st.session_state:
+    st.session_state.chat_open = False
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []
+
+# Seed a greeting the first time the panel is opened
+if st.session_state.chat_open and not st.session_state.chat_messages:
+    st.session_state.chat_messages.append({
+        "role": "assistant",
+        "content": "Hi! 👋 How can I help you? Ask me about your soil results, fertilizer options, or alternative crops.",
+    })
+
+# Style the toggle button as a small circular icon
+st.markdown("""
+<style>
+.st-key-chat_toggle_btn button {
+    border-radius: 50% !important;
+    width: 56px !important;
+    height: 56px !important;
+    font-size: 22px !important;
+    background-color: #2e7d32 !important;
+    color: white !important;
+    border: none !important;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
+    padding: 0 !important;
+}
+.st-key-chat_panel {
+    background: white;
+    border-radius: 14px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.28);
+    padding: 14px 16px 8px 16px;
+    border: 1px solid #e0e0e0;
+}
+.st-key-chat_panel_header {
+    background-color: #2e7d32;
+    color: white;
+    padding: 10px 14px;
+    border-radius: 10px;
+    margin: -14px -16px 10px -16px;
+    font-weight: 600;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# --- Floating toggle icon (bottom-right, always visible) ---
+toggle_box = st.container(key="chat_toggle_box")
+with toggle_box:
+    icon_label = "✕" if st.session_state.chat_open else "💬"
+    if st.button(icon_label, key="chat_toggle_btn"):
+        st.session_state.chat_open = not st.session_state.chat_open
+        st.rerun()
+toggle_box.float("bottom: 24px; right: 24px; z-index: 9999;")
+
+# --- Expandable chat panel ---
+if st.session_state.chat_open:
+    panel = st.container(key="chat_panel")
+    with panel:
+        st.markdown('<div class="st-key-chat_panel_header">🌱 Ask me about your soil</div>', unsafe_allow_html=True)
+
+        history_box = st.container(height=300)
+        with history_box:
+            for msg in st.session_state.chat_messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+        user_query = st.chat_input("Ask about your soil...", key="floating_chat_input")
+
+    panel.float(
+        "bottom: 90px; right: 24px; width: 340px; max-height: 480px; z-index: 9998;"
+    )
+
+    if user_query:
+        st.session_state.chat_messages.append({"role": "user", "content": user_query})
+
+        soil_ctx = (analysis or {}).get("soil_context", "No field analysis has been run yet in this session.")
+        plan_ctx = (analysis or {}).get("plan_text") or "No AI plan generated yet."
+
+        # Include recent turns so follow-ups like "what about the second one?" resolve correctly
+        history = "\n".join(
+            f"{m['role'].capitalize()}: {m['content']}"
+            for m in st.session_state.chat_messages[-9:-1]
+        )
+
+        chat_prompt = f"""
+        You are an agricultural advisor assistant helping a farmer act on a soil/crop analysis
+        that has already been run. Answer the farmer's question directly and practically.
+
+        Field Analysis Context:
+        {soil_ctx}
+
+        Previously Generated Advisory Plan:
+        {plan_ctx}
+
+        Conversation so far:
+        {history}
+
+        Guidance:
+        - If asked about fertilizer brands, give general product *categories* and active-ingredient
+          guidance (e.g., "a urea-based N fertilizer (46-0-0)" or "a balanced NPK 19-19-19 blend")
+          rather than naming specific commercial brands, since availability varies heavily by region
+          and endorsing a brand is not something you can verify. Suggest the farmer check with a
+          local agricultural supply store or extension office for specific brands available to them.
+        - If asked about alternative crops beyond the top 3, reason using the same field parameters
+          (N, P, K, pH, soil type, rainfall, temperature, fertility levels) to suggest other
+          agronomically reasonable options, and briefly explain why each could or couldn't work here.
+        - Keep answers concise and actionable. Use the field context above rather than generic advice.
+
+        Farmer's Question: {user_query}
+        """
+
+        try:
+            bot_text, _ = generate_with_retry_and_fallback(chat_prompt)
+            st.session_state.chat_messages.append({"role": "assistant", "content": bot_text})
+        except Exception as e:
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "content": f"Sorry, I couldn't get a response right now ({e}). Please try again in a moment.",
+            })
+        st.rerun()
