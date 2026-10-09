@@ -214,7 +214,7 @@ if analysis:
     st.subheader("🌾 Top 3 Recommended Crops")
     crop_cols = st.columns(len(analysis["top_crops"]))
     for col, (crop_name, conf) in zip(crop_cols, analysis["top_crops"]):
-        col.metric(crop_name, f"{conf}% suitable" if conf is not None else "—")
+        col.metric(crop_name, f"{conf}% model confidence" if conf is not None else "—")
 
     st.markdown("---")
     c1, c2 = st.columns(2)
