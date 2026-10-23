@@ -158,29 +158,70 @@ if not st.session_state.show_dashboard:
 
 # Apply the supplied landscape image only on the dashboard screen. Keep a pale overlay
 # so form labels, input fields and results remain easy to read.
-background_path = Path("/content/soil_background.png").with_name("soil_background.png")
-if background_path.exists():
-    background_b64 = base64.b64encode(background_path.read_bytes()).decode("ascii")
+BASE_DIR = Path(__file__).resolve().parent
+background_path = BASE_DIR / "soil_background.png"
+
+if background_path.is_file():
+    background_b64 = base64.b64encode(
+        background_path.read_bytes()
+    ).decode("ascii")
+
     st.markdown(f"""
     <style>
     .stApp {{
-        background-image: linear-gradient(rgba(246,250,246,.83), rgba(242,248,242,.88)),
-                          url("data:image/png;base64,{background_b64}");
+        background-image:
+            linear-gradient(
+                rgba(246,250,246,.83),
+                rgba(242,248,242,.88)
+            ),
+            url("data:image/png;base64,{background_b64}");
+
         background-size: cover;
         background-position: center center;
         background-attachment: fixed;
         background-repeat: no-repeat;
     }}
-    [data-testid="stMainBlockContainer"] {{ background:rgba(255,255,255,.08); }}
-    [data-testid="stHorizontalBlock"] > [data-testid="column"] {{ background:rgba(255,255,255,.66); border:1px solid rgba(220,235,222,.72); border-radius:20px; padding:16px 14px 12px; box-shadow:0 8px 26px rgba(23,76,53,.045); backdrop-filter:blur(10px); }}
-    [data-testid="stHorizontalBlock"] > [data-testid="column"] [data-testid="stNumberInput"] input {{ background:rgba(255,255,255,.92); }}
-    .dashboard-head {{ background:rgba(250,253,250,.88) !important; backdrop-filter:blur(8px); }}
-    [data-testid="stVerticalBlockBorderWrapper"] {{ background:rgba(255,255,255,.88); backdrop-filter:blur(8px); }}
-    [data-testid="stMetric"] {{ background:rgba(255,255,255,.91); }}
+
+    [data-testid="stMainBlockContainer"] {{
+        background: rgba(255,255,255,.08);
+    }}
+
+    [data-testid="stHorizontalBlock"] > [data-testid="column"] {{
+        background: rgba(255,255,255,.66);
+        border: 1px solid rgba(220,235,222,.72);
+        border-radius: 20px;
+        padding: 16px 14px 12px;
+        box-shadow: 0 8px 26px rgba(23,76,53,.045);
+        backdrop-filter: blur(10px);
+    }}
+
+    [data-testid="stHorizontalBlock"] > [data-testid="column"]
+    [data-testid="stNumberInput"] input {{
+        background: rgba(255,255,255,.92);
+    }}
+
+    .dashboard-head {{
+        background: rgba(250,253,250,.88) !important;
+        backdrop-filter: blur(8px);
+    }}
+
+    [data-testid="stVerticalBlockBorderWrapper"] {{
+        background: rgba(255,255,255,.88);
+        backdrop-filter: blur(8px);
+    }}
+
+    [data-testid="stMetric"] {{
+        background: rgba(255,255,255,.91);
+    }}
     </style>
     """, unsafe_allow_html=True)
+
 else:
-    st.info("To show the dashboard background, place soil_background.png beside app.py.")
+    st.warning(
+        f"Background image not found: {background_path.name}. "
+        "Check that it exists beside app.py in your repository."
+    )
+
 
 # Dashboard entrance: this container fades in after the landing-screen action.
 head_l, head_r = st.columns([5, 1])
